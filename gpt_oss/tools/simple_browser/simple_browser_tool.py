@@ -29,6 +29,7 @@ from .backend import (
     Backend,
     BackendError,
     maybe_truncate,
+    TavilyBackend,
 )
 from .page_contents import Extract, PageContents
 

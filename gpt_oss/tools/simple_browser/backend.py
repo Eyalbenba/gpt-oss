@@ -89,50 +89,53 @@ class Backend:
 
 
 @chz.chz(typecheck=True)
-class ExaBackend(Backend):
-    """Backend that uses the Exa Search API."""
+class TavilyBackend(Backend):
+    """Backend that uses the Tavily Search API."""
 
     source: str = chz.field(doc="Description of the backend source")
     api_key: str | None = chz.field(
-        doc="Exa API key. Uses EXA_API_KEY environment variable if not provided.",
+        doc="Tavily API key. Uses TAVILY_API_KEY environment variable if not provided.",
         default=None,
     )
 
-    BASE_URL: str = "https://api.exa.ai"
+    BASE_URL: str = "https://api.tavily.com"
 
     def _get_api_key(self) -> str:
-        key = self.api_key or os.environ.get("EXA_API_KEY")
+        key = self.api_key or os.environ.get("TAVILY_API_KEY")
         if not key:
-            raise BackendError("Exa API key not provided")
+            raise BackendError("Tavily API key not provided")
         return key
 
     async def _post(self, session: ClientSession, endpoint: str, payload: dict) -> dict:
-        headers = {"x-api-key": self._get_api_key()}
+        headers = {
+            "Authorization": f"Bearer {self._get_api_key()}",
+            "Content-Type": "application/json"
+        }
         async with session.post(f"{self.BASE_URL}{endpoint}", json=payload, headers=headers) as resp:
             if resp.status != 200:
                 raise BackendError(
-                    f"Exa API error {resp.status}: {await resp.text()}"
+                    f"Tavily API error {resp.status}: {await resp.text()}"
                 )
             return await resp.json()
 
     async def search(
-        self, query: str, topn: int, session: ClientSession
+            self, query: str, topn: int, session: ClientSession
     ) -> PageContents:
         data = await self._post(
             session,
             "/search",
-            {"query": query, "numResults": topn, "contents": {"text": True, "summary": True}},
+            {"query": query, "max_results": topn, "include_raw_content": "text"},
         )
         # make a simple HTML page to work with browser format
         titles_and_urls = [
-            (result["title"], result["url"], result["summary"])
+            (result["title"], result["url"], result["content"])
             for result in data["results"]
         ]
         html_page = f"""
 <html><body>
 <h1>Search Results</h1>
 <ul>
-{"".join([f"<li><a href='{url}'>{title}</a> {summary}</li>" for title, url, summary in titles_and_urls])}
+{"".join([f"<li><a href='{url}'>{title}</a> {content}</li>" for title, url, content in titles_and_urls])}
 </ul>
 </body></html>
 """
@@ -149,16 +152,35 @@ class ExaBackend(Backend):
         is_view_source = url.startswith(VIEW_SOURCE_PREFIX)
         if is_view_source:
             url = url[len(VIEW_SOURCE_PREFIX) :]
-        data = await self._post(
-            session,
-            "/contents",
-            {"urls": [url], "text": { "includeHtmlTags": True }},
-        )
+        
+        payload = {
+            "urls": [url],
+            "format": "text"
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {self._get_api_key()}",
+            "Content-Type": "application/json"
+        }
+
+        
+        async with session.post(
+            f"{self.BASE_URL}/extract",
+            json=payload,
+            headers=headers
+        ) as resp:
+            if resp.status != 200:
+                raise BackendError(
+                    f"Tavily API error {resp.status}: {await resp.text()}"
+                )
+            data = await resp.json()
+        
         results = data.get("results", [])
         if not results:
             raise BackendError(f"No contents returned for {url}")
+
         return process_html(
-            html=results[0].get("text", ""),
+            html=results[0].get("raw_content", ""),
             url=url,
             title=results[0].get("title", ""),
             display_urls=True,
